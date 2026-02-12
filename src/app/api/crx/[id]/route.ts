@@ -137,7 +137,7 @@ export async function GET(
       .replace(/^-|-$/g, "");
     const filename = safeName ? `${safeName}-${id}.zip` : `${id}.zip`;
 
-    return new Response(zipData, {
+    return new Response(Buffer.from(zipData), {
       headers: {
         "Content-Type": "application/zip",
         "Content-Disposition": `attachment; filename="${filename}"`,
