@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
 type DownloadFormat = "zip" | "crx";
@@ -59,6 +59,10 @@ function buildProxyUrl(extensionId: string, name?: string): string {
   return base;
 }
 
+function buildStoreUrl(extensionId: string): string {
+  return `https://chromewebstore.google.com/detail/${extensionId}`;
+}
+
 function timeAgo(ts: number): string {
   const seconds = Math.floor((Date.now() - ts) / 1000);
   if (seconds < 60) return "just now";
@@ -70,8 +74,23 @@ function timeAgo(ts: number): string {
   return `${days}d ago`;
 }
 
+/* ─── Chrome logo (simplified 4-color mark) ─── */
+function ChromeIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none">
+      <circle cx="24" cy="24" r="22" fill="#1e1e1e" stroke="#2a2a2a" strokeWidth="1" />
+      <path d="M24 8a16 16 0 0 1 13.86 8H24v0z" fill="#EA4335" opacity="0.8" />
+      <path d="M37.86 16A16 16 0 0 1 24 40l6.93-12z" fill="#FBBC05" opacity="0.8" />
+      <path d="M24 40A16 16 0 0 1 10.14 16L24 16z" fill="#34A853" opacity="0.8" />
+      <circle cx="24" cy="24" r="7" fill="#4285F4" opacity="0.9" />
+      <circle cx="24" cy="24" r="4" fill="#1e1e1e" />
+    </svg>
+  );
+}
+
 function HomeInner() {
   const searchParams = useSearchParams();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [input, setInput] = useState("");
   const [result, setResult] = useState<{ id: string; name: string; crxUrl: string } | null>(null);
   const [error, setError] = useState("");
@@ -107,6 +126,7 @@ function HomeInner() {
     (id: string, name: string, currentHistory: HistoryEntry[]) => {
       const crxUrl = buildCrxUrl(id);
       setResult({ id, name, crxUrl });
+      setError("");
 
       const entry: HistoryEntry = { id, name, crxUrl, timestamp: Date.now() };
       const updated = [entry, ...currentHistory.filter((h) => h.id !== id)];
@@ -123,10 +143,8 @@ function HomeInner() {
     const name = searchParams.get("name");
     if (id && /^[a-z]{32}$/i.test(id)) {
       processExtension(id.toLowerCase(), name || id, history);
-      // Clean up URL without triggering navigation
       window.history.replaceState({}, "", "/");
     }
-    // Only run when initialized and searchParams change
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialized, searchParams]);
 
@@ -145,18 +163,38 @@ function HomeInner() {
     processExtension(info.id, info.name, history);
   };
 
+  const handleHistoryClick = (entry: HistoryEntry) => {
+    setInput(buildStoreUrl(entry.id));
+    setResult({ id: entry.id, name: entry.name, crxUrl: entry.crxUrl });
+    setError("");
+    setCopied(false);
+    // Scroll to top smoothly so user sees the result
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const handleCopy = async (url: string) => {
     await navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleRemove = (id: string) => {
-    saveHistory(history.filter((h) => h.id !== id));
-    if (result?.id === id) setResult(null);
+  const handleClear = () => {
+    setInput("");
+    setError("");
+    setResult(null);
+    setCopied(false);
+    inputRef.current?.focus();
   };
 
-  const handleClear = () => {
+  const handleRemove = (id: string) => {
+    saveHistory(history.filter((h) => h.id !== id));
+    if (result?.id === id) {
+      setResult(null);
+      setInput("");
+    }
+  };
+
+  const handleClearHistory = () => {
     saveHistory([]);
     setResult(null);
   };
@@ -168,8 +206,8 @@ function HomeInner() {
 
       <main className="flex-1 w-full max-w-2xl mx-auto px-5 py-16 sm:py-24">
         {/* Header */}
-        <header className="mb-14 animate-fade-up">
-          <div className="flex items-center gap-3 mb-4">
+        <header className="mb-12 animate-fade-up">
+          <div className="flex items-center gap-3 mb-5">
             <div className="w-8 h-8 bg-accent/10 border border-accent/30 flex items-center justify-center">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="text-accent">
                 <path d="M8 1L2 4v4c0 3.3 2.6 6.4 6 7 3.4-.6 6-3.7 6-7V4L8 1z" stroke="currentColor" strokeWidth="1.5" fill="none" />
@@ -188,8 +226,25 @@ function HomeInner() {
           </p>
         </header>
 
+        {/* How it works — compact steps */}
+        <div className="mb-10 animate-fade-up" style={{ animationDelay: "0.04s" }}>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { step: "01", label: "Paste URL", desc: "Chrome Web Store link or extension ID" },
+              { step: "02", label: "Choose format", desc: ".zip to sideload, .crx for raw file" },
+              { step: "03", label: "Download", desc: "Unzip & load unpacked in Developer Mode" },
+            ].map((s) => (
+              <div key={s.step} className="border border-border bg-surface/50 p-3">
+                <p className="text-accent font-mono text-[10px] tracking-widest mb-1.5">{s.step}</p>
+                <p className="text-xs font-medium mb-0.5">{s.label}</p>
+                <p className="text-[10px] font-mono text-muted/70 leading-relaxed">{s.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* Format toggle */}
-        <div className="mb-6 animate-fade-up" style={{ animationDelay: "0.05s" }}>
+        <div className="mb-6 animate-fade-up" style={{ animationDelay: "0.06s" }}>
           <div className="flex items-center gap-4">
             <p className="text-[10px] font-mono text-muted uppercase tracking-widest">Format</p>
             <div className="flex border border-border">
@@ -233,13 +288,26 @@ function HomeInner() {
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="flex-1 relative">
               <input
+                ref={inputRef}
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="https://chromewebstore.google.com/detail/..."
-                className="w-full bg-surface border border-border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent transition-colors"
+                className="w-full bg-surface border border-border pl-4 pr-9 py-3 font-mono text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent transition-colors"
                 spellCheck={false}
               />
+              {input && (
+                <button
+                  type="button"
+                  onClick={handleClear}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-foreground transition-colors cursor-pointer"
+                  title="Clear input"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
             </div>
             <button
               type="submit"
@@ -262,9 +330,20 @@ function HomeInner() {
                 <p className="text-sm capitalize">{result.name}</p>
                 <p className="text-xs font-mono text-muted mt-0.5">{result.id}</p>
               </div>
-              <span className="text-[10px] font-mono text-accent bg-accent/10 px-2 py-0.5 border border-accent/20 uppercase tracking-widest shrink-0">
-                Ready
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={buildStoreUrl(result.id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] font-mono text-muted hover:text-foreground transition-colors uppercase tracking-widest px-2 py-0.5 border border-border hover:border-muted"
+                  title="View on Chrome Web Store"
+                >
+                  Store &nearr;
+                </a>
+                <span className="text-[10px] font-mono text-accent bg-accent/10 px-2 py-0.5 border border-accent/20 uppercase tracking-widest">
+                  Ready
+                </span>
+              </div>
             </div>
 
             {format === "crx" && (
@@ -304,72 +383,103 @@ function HomeInner() {
         )}
 
         {/* History */}
-        {history.length > 0 && (
+        {initialized && (
           <section className="animate-fade-up" style={{ animationDelay: "0.2s" }}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xs font-mono uppercase tracking-widest text-muted">
-                History
-                <span className="ml-2 text-accent/60">{history.length}</span>
-              </h2>
-              <button
-                onClick={handleClear}
-                className="text-[10px] font-mono uppercase tracking-wider text-muted hover:text-danger transition-colors cursor-pointer"
-              >
-                Clear all
-              </button>
-            </div>
-
-            <div className="border-t border-border">
-              {history.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="flex items-center gap-4 py-3 border-b border-border group"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm capitalize truncate">{entry.name}</p>
-                    <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
-                      {entry.id}
-                      <span className="mx-2 text-border">|</span>
-                      {timeAgo(entry.timestamp)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <a
-                      href={format === "zip" ? buildProxyUrl(entry.id, entry.name) : buildCrxUrl(entry.id)}
-                      download={format === "crx" ? `${entry.id}.crx` : undefined}
-                      className="text-[10px] font-mono uppercase tracking-wider text-accent hover:text-accent-dim transition-colors px-2 py-1 border border-accent/20 hover:border-accent/40"
-                      title={format === "zip" ? "Download as ZIP" : "Download as CRX"}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="inline -mt-px">
-                        <path d="M8 2v9m0 0l-3-3m3 3l3-3M3 13h10" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                      <span className="ml-1.5 hidden sm:inline">{format === "zip" ? ".zip" : ".crx"}</span>
-                    </a>
-                    <button
-                      onClick={() => handleRemove(entry.id)}
-                      className="text-[10px] font-mono text-muted hover:text-danger transition-colors px-2 py-1 border border-border hover:border-danger/40 cursor-pointer"
-                      title="Remove from history"
-                    >
-                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="inline -mt-px">
-                        <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
-                      </svg>
-                    </button>
-                  </div>
+            {history.length > 0 ? (
+              <>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xs font-mono uppercase tracking-widest text-muted">
+                    History
+                    <span className="ml-2 text-accent/60">{history.length}</span>
+                  </h2>
+                  <button
+                    onClick={handleClearHistory}
+                    className="text-[10px] font-mono uppercase tracking-wider text-muted hover:text-danger transition-colors cursor-pointer"
+                  >
+                    Clear all
+                  </button>
                 </div>
-              ))}
-            </div>
+
+                <div className="border-t border-border">
+                  {history.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className={`flex items-center gap-4 py-3 border-b border-border group cursor-pointer transition-colors hover:bg-surface/80 ${
+                        result?.id === entry.id ? "bg-surface" : ""
+                      }`}
+                      onClick={() => handleHistoryClick(entry)}
+                      title="Click to select this extension"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm capitalize truncate transition-colors ${
+                          result?.id === entry.id ? "text-accent" : "group-hover:text-accent"
+                        }`}>
+                          {entry.name}
+                        </p>
+                        <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+                          {entry.id}
+                          <span className="mx-2 text-border">|</span>
+                          {timeAgo(entry.timestamp)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <a
+                          href={format === "zip" ? buildProxyUrl(entry.id, entry.name) : buildCrxUrl(entry.id)}
+                          download={format === "crx" ? `${entry.id}.crx` : undefined}
+                          className="text-[10px] font-mono uppercase tracking-wider text-accent hover:text-accent-dim transition-colors px-2 py-1 border border-accent/20 hover:border-accent/40"
+                          title={format === "zip" ? "Download as ZIP" : "Download as CRX"}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="inline -mt-px">
+                            <path d="M8 2v9m0 0l-3-3m3 3l3-3M3 13h10" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                          <span className="ml-1.5 hidden sm:inline">{format === "zip" ? ".zip" : ".crx"}</span>
+                        </a>
+                        <button
+                          onClick={() => handleRemove(entry.id)}
+                          className="text-[10px] font-mono text-muted hover:text-danger transition-colors px-2 py-1 border border-border hover:border-danger/40 cursor-pointer"
+                          title="Remove from history"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="inline -mt-px">
+                            <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : !result && (
+              /* Empty state for first-time users */
+              <div className="border border-dashed border-border py-10 px-6 text-center">
+                <div className="flex justify-center mb-4 opacity-40">
+                  <ChromeIcon size={32} />
+                </div>
+                <p className="text-sm text-muted mb-1">No extensions grabbed yet</p>
+                <p className="text-[10px] font-mono text-muted/50 leading-relaxed max-w-sm mx-auto">
+                  Paste a Chrome Web Store URL above to get started. Downloaded extensions will appear here for quick re-download.
+                </p>
+              </div>
+            )}
           </section>
         )}
       </main>
 
       {/* Footer */}
       <footer className="w-full max-w-2xl mx-auto px-5 pb-8">
-        <div className="border-t border-border pt-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-          <p className="text-[10px] font-mono text-muted uppercase tracking-wider">
-            Free &amp; open source &mdash; no tracking, no accounts
-          </p>
-          <p className="text-[10px] font-mono text-muted/40">
-            CRX Grabber
+        <div className="border-t border-border pt-5">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <ChromeIcon size={14} />
+              <p className="text-[10px] font-mono text-muted uppercase tracking-wider">
+                For Chrome Web Store extensions
+              </p>
+            </div>
+            <p className="text-[10px] font-mono text-muted/40">
+              Free &amp; open source &mdash; no tracking
+            </p>
+          </div>
+          <p className="mt-3 text-[9px] font-mono text-muted/30 leading-relaxed">
+            Not affiliated with Google, Chrome, or the Chrome Web Store. All trademarks belong to their respective owners.
           </p>
         </div>
       </footer>
