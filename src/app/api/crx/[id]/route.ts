@@ -6,6 +6,49 @@ const CRX_URL_TEMPLATE =
 // 20MB max — covers virtually all extensions, keeps bandwidth in check
 const MAX_CRX_SIZE = 20 * 1024 * 1024;
 
+/**
+ * Strip the CRX2/CRX3 header and return the embedded ZIP.
+ *
+ * CRX3 layout: "Cr24" (4 B) | version=3 (uint32 LE) | header_size (uint32 LE) | header | ZIP
+ * CRX2 layout: "Cr24" (4 B) | version=2 (uint32 LE) | pk_len (uint32 LE) | sig_len (uint32 LE) | pk | sig | ZIP
+ *
+ * Falls back to scanning for the ZIP local-file-header magic (PK\x03\x04).
+ */
+function stripCrxHeader(buf: Uint8Array): Uint8Array | null {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+  // Check for CRX magic "Cr24"
+  if (buf[0] === 0x43 && buf[1] === 0x72 && buf[2] === 0x32 && buf[3] === 0x34) {
+    const version = view.getUint32(4, true);
+    let zipOffset: number;
+
+    if (version === 3) {
+      const headerSize = view.getUint32(8, true);
+      zipOffset = 12 + headerSize;
+    } else if (version === 2) {
+      const pkLen = view.getUint32(8, true);
+      const sigLen = view.getUint32(12, true);
+      zipOffset = 16 + pkLen + sigLen;
+    } else {
+      return null;
+    }
+
+    if (zipOffset < buf.byteLength) {
+      return buf.subarray(zipOffset);
+    }
+    return null;
+  }
+
+  // Fallback: scan for ZIP magic (PK\x03\x04)
+  for (let i = 0; i < Math.min(buf.byteLength, 1024); i++) {
+    if (buf[i] === 0x50 && buf[i + 1] === 0x4b && buf[i + 2] === 0x03 && buf[i + 3] === 0x04) {
+      return buf.subarray(i);
+    }
+  }
+
+  return null;
+}
+
 // Simple in-memory rate limiter (per-instance, resets on cold start)
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_WINDOW_MS = 60_000; // 1 minute
@@ -67,47 +110,41 @@ export async function GET(
       );
     }
 
-    // Check Content-Length before streaming
-    const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
-    if (contentLength > MAX_CRX_SIZE) {
+    // Buffer the full CRX so we can strip the header and serve pure ZIP
+    const crxBuf = new Uint8Array(await response.arrayBuffer());
+
+    if (crxBuf.byteLength > MAX_CRX_SIZE) {
       return NextResponse.json(
         { error: "Extension file too large" },
         { status: 413 }
       );
     }
 
-    // Stream the response instead of buffering the entire blob in memory
-    const upstream = response.body;
-    if (!upstream) {
+    // Strip the CRX header to get a valid ZIP
+    const zipData = stripCrxHeader(crxBuf);
+    if (!zipData) {
       return NextResponse.json(
-        { error: "No response body from upstream" },
+        { error: "Could not parse CRX file — invalid format" },
         { status: 502 }
       );
     }
 
-    // Pipe through a TransformStream that enforces the size limit
-    let bytesRead = 0;
-    const limiter = new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        bytesRead += chunk.byteLength;
-        if (bytesRead > MAX_CRX_SIZE) {
-          controller.error(new Error("Response exceeded maximum size"));
-          return;
-        }
-        controller.enqueue(chunk);
+    // Build a human-friendly filename: [name]-[id].zip
+    const rawName = request.nextUrl.searchParams.get("name") || "";
+    const safeName = rawName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    const filename = safeName ? `${safeName}-${id}.zip` : `${id}.zip`;
+
+    return new Response(zipData, {
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Length": zipData.byteLength.toString(),
+        "Cache-Control": "private, no-store",
       },
     });
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/x-chrome-extension",
-      "Content-Disposition": `attachment; filename="${id}.crx"`,
-      "Cache-Control": "private, no-store",
-    };
-    if (contentLength > 0) {
-      headers["Content-Length"] = contentLength.toString();
-    }
-
-    return new Response(upstream.pipeThrough(limiter), { headers });
   } catch (err) {
     const message =
       err instanceof Error && err.name === "TimeoutError"

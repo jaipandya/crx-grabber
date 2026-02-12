@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
+type DownloadFormat = "zip" | "crx";
+
 interface HistoryEntry {
   id: string;
   name: string;
@@ -11,6 +13,7 @@ interface HistoryEntry {
 }
 
 const STORAGE_KEY = "crx-history";
+const FORMAT_KEY = "crx-format";
 
 function extractExtensionInfo(url: string): { id: string; name: string } | null {
   // Match both old and new Chrome Web Store URL formats
@@ -50,8 +53,10 @@ function buildCrxUrl(extensionId: string): string {
   return `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0.0.0&acceptformat=crx2,crx3&x=id%3D${extensionId}%26uc`;
 }
 
-function buildProxyUrl(extensionId: string): string {
-  return `/api/crx/${extensionId}`;
+function buildProxyUrl(extensionId: string, name?: string): string {
+  const base = `/api/crx/${extensionId}`;
+  if (name) return `${base}?name=${encodeURIComponent(name)}`;
+  return base;
 }
 
 function timeAgo(ts: number): string {
@@ -73,17 +78,25 @@ function HomeInner() {
   const [copied, setCopied] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [initialized, setInitialized] = useState(false);
+  const [format, setFormat] = useState<DownloadFormat>("zip");
 
-  // Load history from localStorage on mount
+  // Load history + format preference from localStorage on mount
   useEffect(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) setHistory(JSON.parse(stored));
+      const savedFormat = localStorage.getItem(FORMAT_KEY);
+      if (savedFormat === "crx" || savedFormat === "zip") setFormat(savedFormat);
     } catch {
       // ignore
     }
     setInitialized(true);
   }, []);
+
+  const handleFormatChange = (f: DownloadFormat) => {
+    setFormat(f);
+    localStorage.setItem(FORMAT_KEY, f);
+  };
 
   const saveHistory = useCallback((entries: HistoryEntry[]) => {
     setHistory(entries);
@@ -168,12 +181,52 @@ function HomeInner() {
             </h1>
           </div>
           <p className="text-3xl sm:text-4xl font-light tracking-tight leading-tight">
-            Download <span className="text-accent font-normal">Chrome extension</span> CRX files.
+            Download <span className="text-accent font-normal">Chrome extensions</span> to sideload.
           </p>
           <p className="mt-3 text-muted text-sm font-mono">
-            Paste a Chrome Web Store URL &rarr; get the direct .crx download link
+            Paste a Chrome Web Store URL &rarr; grab as .zip or .crx
           </p>
         </header>
+
+        {/* Format toggle */}
+        <div className="mb-6 animate-fade-up" style={{ animationDelay: "0.05s" }}>
+          <div className="flex items-center gap-4">
+            <p className="text-[10px] font-mono text-muted uppercase tracking-widest">Format</p>
+            <div className="flex border border-border">
+              <button
+                type="button"
+                onClick={() => handleFormatChange("zip")}
+                className={`px-4 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors cursor-pointer ${
+                  format === "zip"
+                    ? "bg-accent text-background"
+                    : "text-muted hover:text-foreground"
+                }`}
+              >
+                .zip
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFormatChange("crx")}
+                className={`px-4 py-1.5 font-mono text-xs uppercase tracking-wider border-l border-border transition-colors cursor-pointer ${
+                  format === "crx"
+                    ? "bg-accent text-background"
+                    : "text-muted hover:text-foreground"
+                }`}
+              >
+                .crx
+              </button>
+            </div>
+          </div>
+          {format === "zip" ? (
+            <p className="mt-2 text-[10px] font-mono text-muted/70 leading-relaxed">
+              CRX header stripped server-side &rarr; valid .zip you can unzip &amp; load unpacked. 20 MB limit.
+            </p>
+          ) : (
+            <p className="mt-2 text-[10px] font-mono text-muted/70 leading-relaxed">
+              Raw .crx direct from Google &mdash; no size limit, no proxy. Cannot be unzipped directly.
+            </p>
+          )}
+        </div>
 
         {/* Input */}
         <form onSubmit={handleSubmit} className="mb-8 animate-fade-up" style={{ animationDelay: "0.1s" }}>
@@ -192,7 +245,7 @@ function HomeInner() {
               type="submit"
               className="bg-accent text-background px-6 py-3 font-mono text-sm font-medium uppercase tracking-wider hover:bg-accent-dim transition-colors cursor-pointer shrink-0"
             >
-              Get CRX
+              Grab {format === "zip" ? ".zip" : ".crx"}
             </button>
           </div>
           {error && (
@@ -214,33 +267,37 @@ function HomeInner() {
               </span>
             </div>
 
-            <div className="bg-background border border-border p-3 mt-4">
-              <p className="text-xs font-mono text-muted mb-2 uppercase tracking-wider">CRX Download URL</p>
-              <p className="text-xs font-mono text-foreground/80 break-all leading-relaxed select-all">
-                {result.crxUrl}
-              </p>
-            </div>
+            {format === "crx" && (
+              <div className="bg-background border border-border p-3 mt-4">
+                <p className="text-xs font-mono text-muted mb-2 uppercase tracking-wider">Direct CRX URL</p>
+                <p className="text-xs font-mono text-foreground/80 break-all leading-relaxed select-all">
+                  {result.crxUrl}
+                </p>
+              </div>
+            )}
 
             <div className="flex gap-3 mt-4">
-              <button
-                onClick={() => handleCopy(result.crxUrl)}
-                className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-muted hover:text-foreground transition-colors cursor-pointer"
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <rect x="5" y="5" width="9" height="9" rx="1" />
-                  <path d="M11 5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2" />
-                </svg>
-                {copied ? "Copied!" : "Copy URL"}
-              </button>
+              {format === "crx" && (
+                <button
+                  onClick={() => handleCopy(result.crxUrl)}
+                  className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-muted hover:text-foreground transition-colors cursor-pointer"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <rect x="5" y="5" width="9" height="9" rx="1" />
+                    <path d="M11 5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2" />
+                  </svg>
+                  {copied ? "Copied!" : "Copy URL"}
+                </button>
+              )}
               <a
-                href={buildProxyUrl(result.id)}
-                download={`${result.id}.crx`}
+                href={format === "zip" ? buildProxyUrl(result.id, result.name) : result.crxUrl}
+                download={format === "crx" ? `${result.id}.crx` : undefined}
                 className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-accent hover:text-accent-dim transition-colors"
               >
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <path d="M8 2v9m0 0l-3-3m3 3l3-3M3 13h10" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Download .crx
+                Download {format === "zip" ? ".zip" : ".crx"}
               </a>
             </div>
           </div>
@@ -278,15 +335,15 @@ function HomeInner() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <a
-                      href={buildProxyUrl(entry.id)}
-                      download={`${entry.id}.crx`}
+                      href={format === "zip" ? buildProxyUrl(entry.id, entry.name) : buildCrxUrl(entry.id)}
+                      download={format === "crx" ? `${entry.id}.crx` : undefined}
                       className="text-[10px] font-mono uppercase tracking-wider text-accent hover:text-accent-dim transition-colors px-2 py-1 border border-accent/20 hover:border-accent/40"
-                      title="Download CRX"
+                      title={format === "zip" ? "Download as ZIP" : "Download as CRX"}
                     >
                       <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="inline -mt-px">
                         <path d="M8 2v9m0 0l-3-3m3 3l3-3M3 13h10" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
-                      <span className="ml-1.5 hidden sm:inline">.crx</span>
+                      <span className="ml-1.5 hidden sm:inline">{format === "zip" ? ".zip" : ".crx"}</span>
                     </a>
                     <button
                       onClick={() => handleRemove(entry.id)}
